@@ -1,0 +1,24 @@
+# Cocos (generated, very large)
+game/library/
+game/temp/
+game/local/
+game/build/
+game/profiles/
+
+# Java
+backend/target/
+*.class
+
+# Node / Vue
+node_modules/
+web/dist/
+
+# Editors and OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
