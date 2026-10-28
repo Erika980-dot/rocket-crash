@@ -1,0 +1,35 @@
+### Register a new player
+POST http://localhost:8080/api/auth/register
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+### Register the same name again → 409 USERNAME_TAKEN
+POST http://localhost:8080/api/auth/register
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+### Bad input → 400 VALIDATION_ERROR
+POST http://localhost:8080/api/auth/register
+Content-Type: application/json
+
+{"username": "c!", "password": "short"}
+
+### Login OK → token
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+### Wrong password → 401 INVALID_CREDENTIALS
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "charlie", "password": "wrongpass1"}
+
+### Unknown user → also 401 INVALID_CREDENTIALS (same message!)
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "nobody", "password": "password123"}

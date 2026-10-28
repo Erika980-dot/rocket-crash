@@ -7,3 +7,6 @@ spring:
     hibernate:
       ddl-auto: validate   # check Java classes match the tables; never change tables
     show-sql: true         # print each SQL query in the console (great for learning)
+jwt:
+  secret: rocket-crash-dev-secret-change-me-0123456789abcdef
+  access-ttl-minutes: 15
