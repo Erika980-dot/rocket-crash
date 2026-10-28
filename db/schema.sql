@@ -47,3 +47,5 @@ CREATE TABLE ledger (                      -- every balance change, forever
   created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_user_time (user_id, created_at)
 );
+
+git

@@ -33,3 +33,32 @@ POST http://localhost:8080/api/auth/login
 Content-Type: application/json
 
 {"username": "nobody", "password": "password123"}
+
+### Login and save the token
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+> {%
+    client.global.set("token", response.body.accessToken);
+%}
+
+### My wallet: WITH token → 200
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{token}}
+
+### My wallet: NO token → 401 UNAUTHORIZED
+GET http://localhost:8080/api/wallet/me
+
+### My wallet: FAKE token → 401 TOKEN_INVALID
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.fakesignature
+
+### My profile → 200
+GET http://localhost:8080/api/users/me
+Authorization: Bearer {{token}}
+
+### Old URL is gone, even WITH a token → 404
+GET http://localhost:8080/api/wallet/1
+Authorization: Bearer {{token}}
