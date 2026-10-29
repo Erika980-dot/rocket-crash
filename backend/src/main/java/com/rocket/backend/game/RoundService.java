@@ -1,6 +1,12 @@
 package com.rocket.backend.game;
 
+import com.rocket.backend.bet.Bet;
+import com.rocket.backend.bet.BetRepository;
+import com.rocket.backend.bet.BetStatus;
 import com.rocket.backend.common.Crypto;
+import com.rocket.backend.ledger.LedgerEntry;
+import com.rocket.backend.ledger.LedgerRepository;
+import com.rocket.backend.wallet.WalletRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,6 +21,9 @@ import java.util.List;
 public class RoundService {
 
     private final RoundRepository roundRepository;
+    private final BetRepository betRepository;
+    private final WalletRepository walletRepository;
+    private final LedgerRepository ledgerRepository;
 
     /** Create a new round: secret seed → hash → crash point.  创建新回合 */
     @Transactional
@@ -42,12 +51,14 @@ public class RoundService {
 
     /** Rocket exploded.  火箭爆炸 */
     @Transactional
-    public void crash(Long roundId) {
+    public int crash(Long roundId) {
         Round r = roundRepository.findById(roundId).orElseThrow();
         r.setStatus(RoundStatus.CRASHED);
         r.setCrashedAt(LocalDateTime.now());
-        // Part 3C will add here: mark all PLACED bets in this round as LOST
-        // 3C 会在这里加:把这一局还没提现的注单全部改成"输"
+
+        // Everyone still flying loses. Their money was already taken at bet time.
+        // 还在飞的人全部判输。钱在下注时已经扣了,这里只改状态。
+        return betRepository.settleLosers(roundId, BetStatus.PLACED, BetStatus.LOST);
     }
 
     /** On startup: rounds left half-finished by a restart → CANCELLED.  启动时清理卡住的回合 */
@@ -55,7 +66,18 @@ public class RoundService {
     public int cancelUnfinishedRounds() {
         List<Round> stuck = roundRepository.findByStatusIn(
                 List.of(RoundStatus.BETTING, RoundStatus.RUNNING));
-        stuck.forEach(r -> r.setStatus(RoundStatus.CANCELLED));
+
+        for (Round r : stuck) {
+            r.setStatus(RoundStatus.CANCELLED);
+
+            // Give every unsettled bet its money back.  把还没结算的注单全部退款
+            for (Bet b : betRepository.findByRoundIdAndStatus(r.getId(), BetStatus.PLACED)) {
+                b.setStatus(BetStatus.REFUNDED);
+                walletRepository.credit(b.getUserId(), b.getAmount());
+                ledgerRepository.save(LedgerEntry.of(b.getUserId(), b.getAmount(),
+                        walletRepository.balanceOf(b.getUserId()), "REFUND", b.getId()));
+            }
+        }
         return stuck.size();
     }
 

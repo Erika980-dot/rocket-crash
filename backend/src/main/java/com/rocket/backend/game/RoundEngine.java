@@ -76,8 +76,8 @@ public class RoundEngine {
         Thread.sleep(flightMs);
 
         // 3. CRASHED
-        roundService.crash(r.getId());
+        int losers = roundService.crash(r.getId());
         current.set(current.get().crashed());
-        log.info("Round {} CRASHED at {}x", r.getId(), r.getCrashPoint() / 100.0);
+        log.info("Round {} CRASHED at {}x ({} bet(s) lost)", r.getId(), r.getCrashPoint() / 100.0, losers);
     }
 }

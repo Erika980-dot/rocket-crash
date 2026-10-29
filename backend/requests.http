@@ -152,3 +152,44 @@ POST http://localhost:8080/api/auth/refresh
 Content-Type: application/json
 
 {"refreshToken": "{{refreshB}}"}
+
+### ===== GAME =====
+
+### Login (save token)
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+> {%
+    client.global.set("token", response.body.accessToken);
+%}
+
+### Watch the round (public)  观察当前回合
+GET http://localhost:8080/api/rounds/current
+
+### My balance before
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{token}}
+
+### Place bet: run during BETTING  在下注阶段执行
+POST http://localhost:8080/api/bets
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"amount": 100, "requestId": "{{$uuid}}"}
+
+### Double-click test: SAME requestId twice → same bet, charged ONCE
+POST http://localhost:8080/api/bets
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"amount": 100, "requestId": "fixed-test-id-1"}
+
+### Cash out: run during RUNNING  在飞行阶段执行
+POST http://localhost:8080/api/bets/cashout
+Authorization: Bearer {{token}}
+
+### My bet history
+GET http://localhost:8080/api/bets/me
+Authorization: Bearer {{token}}

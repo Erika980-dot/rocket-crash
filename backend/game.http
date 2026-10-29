@@ -1,0 +1,50 @@
+### 1. Login (run once at the start)  先登录
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+> {%
+    client.global.set("token", response.body.accessToken);
+%}
+
+### 2. Watch the round  看现在是哪个阶段
+GET http://localhost:8080/api/rounds/current
+
+### 3. My balance  我的余额
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{token}}
+
+### 4. Place bet 100 (during BETTING)  下注
+POST http://localhost:8080/api/bets
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"amount": 100, "requestId": "{{$uuid}}"}
+
+> {%
+    client.test("Bet placed", () => {
+        client.assert(response.status === 200, "Got " + response.status + " " + JSON.stringify(response.body));
+    });
+%}
+
+### 5. Cash out (during RUNNING)  提现
+POST http://localhost:8080/api/bets/cashout
+Authorization: Bearer {{token}}
+
+> {%
+    client.test("Cashed out", () => {
+        client.assert(response.status === 200, "Got " + response.status + " " + JSON.stringify(response.body));
+    });
+%}
+
+### 6. My bet history  下注记录
+GET http://localhost:8080/api/bets/me
+Authorization: Bearer {{token}}
+
+### 7. Double-click test: change the id each round (-1, -2, -3…)  连点测试
+POST http://localhost:8080/api/bets
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"amount": 100, "requestId": "double-click-1"}
