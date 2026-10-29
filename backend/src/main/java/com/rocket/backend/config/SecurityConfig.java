@@ -1,5 +1,6 @@
 package com.rocket.backend.config;
 
+import com.rocket.backend.session.SessionService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -15,7 +16,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http, JwtService jwtService) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, JwtService jwtService, SessionService sessionService) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -29,7 +30,7 @@ public class SecurityConfig {
                     res.setContentType("application/json");
                     res.getWriter().write("{\"code\":\"UNAUTHORIZED\",\"message\":\"Login required\"}");
                 }))
-                .addFilterBefore(new JwtAuthFilter(jwtService), UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(new JwtAuthFilter(jwtService, sessionService), UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }

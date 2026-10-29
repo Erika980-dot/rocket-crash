@@ -10,3 +10,4 @@ spring:
 jwt:
   secret: rocket-crash-dev-secret-change-me-0123456789abcdef
   access-ttl-minutes: 15
+  refresh-ttl-days: 7

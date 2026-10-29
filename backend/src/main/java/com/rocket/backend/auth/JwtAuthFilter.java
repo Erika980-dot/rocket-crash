@@ -1,5 +1,6 @@
 package com.rocket.backend.auth;
 
+import com.rocket.backend.session.SessionService;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -16,9 +17,11 @@ import java.util.List;
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
+    private final SessionService sessionService;
 
-    public JwtAuthFilter(JwtService jwtService) {
+    public JwtAuthFilter(JwtService jwtService, SessionService sessionService) {
         this.jwtService = jwtService;
+        this.sessionService = sessionService;
     }
 
     // Don't check tokens on login/register: those are how you GET a token
@@ -43,10 +46,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         String token = header.substring(7);   // remove "Bearer "
 
         try {
-            Long userId = jwtService.parseUserId(token);   // checks signature + expiry
+            JwtService.AccessClaims claims = jwtService.parse(token);
 
-            // Tell Spring Security: "this request is user <userId>"
-            var auth = new UsernamePasswordAuthenticationToken(userId, null, List.of());
+            // Is this token's session still the user's current one?
+            if (!sessionService.isCurrent(claims.userId(), claims.sessionId())) {
+                writeError(response, "KICKED", "Your account was logged in on another device");
+                return;
+            }
+
+            var auth = new UsernamePasswordAuthenticationToken(claims.userId(), null, List.of());
             SecurityContextHolder.getContext().setAuthentication(auth);
 
         } catch (ExpiredJwtException e) {

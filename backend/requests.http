@@ -62,3 +62,93 @@ Authorization: Bearer {{token}}
 ### Old URL is gone, even WITH a token → 404
 GET http://localhost:8080/api/wallet/1
 Authorization: Bearer {{token}}
+
+### ===== DUPLICATE LOGIN =====
+
+### Device A logs in
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+> {%
+    client.global.set("tokenA", response.body.accessToken);
+%}
+
+### Device A works → 200
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{tokenA}}
+
+### Device B logs in with the SAME account
+POST http://localhost:8080/api/auth/login
+Content-Type: application/json
+
+{"username": "charlie", "password": "password123"}
+
+> {%
+    client.global.set("tokenB", response.body.accessToken);
+    client.global.set("refreshB", response.body.refreshToken);
+%}
+
+### Device A is kicked → 401 KICKED
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{tokenA}}
+
+> {%
+    client.test("Device A is kicked", () => {
+        client.assert(response.status === 401, "Expected 401 but got " + response.status);
+        client.assert(response.body.code === "KICKED", "Expected KICKED");
+    });
+%}
+
+### Device B works → 200
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{tokenB}}
+
+### ===== REFRESH + ROTATION =====
+
+### Refresh → new access + new refresh token
+POST http://localhost:8080/api/auth/refresh
+Content-Type: application/json
+
+{"refreshToken": "{{refreshB}}"}
+
+> {%
+    client.global.set("usedRefresh", client.global.get("refreshB"));
+    client.global.set("refreshB", response.body.refreshToken);
+    client.global.set("tokenB", response.body.accessToken);
+%}
+
+### The new access token works → 200
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{tokenB}}
+
+### Reusing the OLD refresh token → 401 REFRESH_INVALID (rotation!)
+POST http://localhost:8080/api/auth/refresh
+Content-Type: application/json
+
+{"refreshToken": "{{usedRefresh}}"}
+
+### ===== LOGOUT =====
+
+### Logout → 204
+POST http://localhost:8080/api/auth/logout
+Content-Type: application/json
+
+{"refreshToken": "{{refreshB}}"}
+
+> {%
+    client.test("Logout returns 204", () => {
+        client.assert(response.status === 204, "Expected 204 but got " + response.status);
+    });
+%}
+
+### After logout, the access token stops working → 401
+GET http://localhost:8080/api/wallet/me
+Authorization: Bearer {{tokenB}}
+
+### After logout, refresh fails → 401 REFRESH_INVALID
+POST http://localhost:8080/api/auth/refresh
+Content-Type: application/json
+
+{"refreshToken": "{{refreshB}}"}

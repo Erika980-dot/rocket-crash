@@ -3,6 +3,8 @@ package com.rocket.backend.auth;
 import com.rocket.backend.common.GameException;
 import com.rocket.backend.ledger.LedgerEntry;
 import com.rocket.backend.ledger.LedgerRepository;
+import com.rocket.backend.session.SessionService;
+import com.rocket.backend.session.SessionTokens;
 import com.rocket.backend.user.User;
 import com.rocket.backend.user.UserRepository;
 import com.rocket.backend.wallet.Wallet;
@@ -24,6 +26,7 @@ public class AuthService {
     private final LedgerRepository ledgerRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final SessionService sessionService;
 
     @Transactional   // user + wallet + ledger: all three saved, or none (Step 1, Experiment 4!)
     public RegisterResponse register(RegisterRequest req) {
@@ -53,7 +56,21 @@ public class AuthService {
                 .orElseThrow(() -> new GameException(
                         HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Wrong username or password"));
 
-        String token = jwtService.createAccessToken(user.getId());
-        return new TokenResponse(token, "Bearer", jwtService.accessTtlSeconds());
+        SessionTokens session = sessionService.start(user.getId());   // kicks any old device
+        return toTokenResponse(session);
+    }
+
+    public TokenResponse refresh(RefreshRequest req) {
+        SessionTokens session = sessionService.rotate(req.refreshToken());
+        return toTokenResponse(session);
+    }
+
+    public void logout(RefreshRequest req) {
+        sessionService.logout(req.refreshToken());
+    }
+
+    private TokenResponse toTokenResponse(SessionTokens s) {
+        String access = jwtService.createAccessToken(s.userId(), s.sessionId());
+        return new TokenResponse(access, s.refreshToken(), "Bearer", jwtService.accessTtlSeconds());
     }
 }

@@ -1,5 +1,6 @@
 package com.rocket.backend.auth;
 
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,25 +23,26 @@ public class JwtService {
         this.accessTtlMs = ttlMinutes * 60_000;
     }
 
-    public String createAccessToken(Long userId) {
+    public record AccessClaims(Long userId, String sessionId) {}
+
+    public String createAccessToken(Long userId, String sessionId) {
         Date now = new Date();
         return Jwts.builder()
-                .subject(userId.toString())                          // who
-                .issuedAt(now)                                       // when made
-                .expiration(new Date(now.getTime() + accessTtlMs))   // when it dies
-                .signWith(key)                                       // the signature
-                .compact();                                          // → "xxx.yyy.zzz"
+                .subject(userId.toString())
+                .claim("sid", sessionId)                              // ← new
+                .issuedAt(now)
+                .expiration(new Date(now.getTime() + accessTtlMs))
+                .signWith(key)
+                .compact();
     }
 
-    // Throws an exception if the token is fake, changed or expired
-    public Long parseUserId(String token) {
-        String subject = Jwts.parser()
+    public AccessClaims parse(String token) {
+        Claims claims = Jwts.parser()
                 .verifyWith(key)
                 .build()
                 .parseSignedClaims(token)
-                .getPayload()
-                .getSubject();
-        return Long.valueOf(subject);
+                .getPayload();
+        return new AccessClaims(Long.valueOf(claims.getSubject()), claims.get("sid", String.class));
     }
 
     public long accessTtlSeconds() {
