@@ -48,4 +48,18 @@ CREATE TABLE ledger (                      -- every balance change, forever
   KEY idx_user_time (user_id, created_at)
 );
 
-git
+CREATE TABLE user_sessions (
+  id           VARCHAR(36) PRIMARY KEY,     -- the session id ("sid"), a UUID
+  user_id      BIGINT NOT NULL,
+  refresh_hash VARCHAR(64) NOT NULL,        -- SHA-256 of the refresh token (64 hex chars)
+  expires_at   DATETIME NOT NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_user (user_id),             -- ONE session per user = duplicate-login rule
+  UNIQUE KEY uk_refresh (refresh_hash)      -- fast lookup by token
+);
+
+ALTER TABLE rounds
+  MODIFY server_seed VARCHAR(64) NOT NULL,
+  MODIFY seed_hash   VARCHAR(64) NOT NULL,
+  MODIFY started_at  DATETIME(3) NULL,
+  MODIFY crashed_at  DATETIME(3) NULL;
