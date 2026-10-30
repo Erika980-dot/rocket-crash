@@ -51,5 +51,13 @@ export const useAuthStore = defineStore('auth', () => {
     clear()
   }
 
+    // Another tab changed the tokens (refresh, login or logout) → follow it.
+  // The "storage" event fires in every OTHER tab of the same site.
+  // 其他分页改了 token(刷新/登录/登出)→ 跟着同步。"storage" 事件只会在"其他"分页触发。
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'accessToken') accessToken.value = e.newValue ?? ''
+    if (e.key === 'refreshToken') refreshToken.value = e.newValue ?? ''
+  })
+  
   return { accessToken, refreshToken, isLoggedIn, setTokens, clear, login, register, logout }
 })

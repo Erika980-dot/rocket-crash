@@ -3,11 +3,13 @@ import { useAuthStore } from '@/stores/auth'
 import LoginView from '@/views/LoginView.vue'
 import RegisterView from '@/views/RegisterView.vue'
 import LobbyView from '@/views/LobbyView.vue'
+import HistoryView from '@/views/HistoryView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: '/', component: LobbyView, meta: { requiresAuth: true } },
+    { path: '/history', component: HistoryView, meta: { requiresAuth: true } },
     { path: '/login', component: LoginView },
     { path: '/register', component: RegisterView },
     { path: '/:pathMatch(.*)*', redirect: '/' },   // any unknown URL → lobby
