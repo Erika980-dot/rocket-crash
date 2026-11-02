@@ -1,6 +1,8 @@
-import { _decorator, Component, Label, Node, Graphics, Vec3, Color, tween, UIOpacity, Prefab, instantiate, Sprite } from 'cc';
-import { getJson } from './Api';
-import { fmtX, multiplierAt, GROWTH_PER_MS} from './GameMath';
+import { _decorator, Component, Label, Node, Graphics, Vec3, Color, tween, UIOpacity,
+         Prefab, instantiate, Sprite, Button, EditBox } from 'cc';
+import { ApiError, getJson, hasToken, request } from './Api';
+import { initBridge, requestNewToken, sendToParent } from './Bridge';
+import { fmtX, multiplierAt, GROWTH_PER_MS } from './GameMath';
 const { ccclass, property } = _decorator;
 
 /** Same shape as the backend's RoundView  对应后端的 RoundView */
@@ -14,10 +16,19 @@ interface RoundView {
     crashPoint: number | null;
 }
 
+interface Bet {
+    id: number;
+    roundId: number;
+    amount: number;
+    status: 'PLACED' | 'WON' | 'LOST' | 'REFUNDED';
+    cashoutAt: number | null;
+    payout: number;
+}
+
 // Where the flight path sits on screen (Canvas centre = 0,0)  飞行路线在画面的位置
-const START = new Vec3(-560, -280, 0);   // launch point, bottom-left  起点(左下)
+const START = new Vec3(-560, -220, 0);   // was -280
 const WIDTH = 1000;                      // px for 20 s of flight      20 秒飞过的宽度
-const HEIGHT = 500;                      // px from 1x to 10x          1x 到 10x 的高度
+const HEIGHT = 430;                      // was 500
 const SECONDS_ACROSS = 20;
 
 const COLOR_BETTING = new Color(252, 211, 77);    // amber  琥珀色
@@ -35,8 +46,14 @@ export class RocketGame extends Component {
     @property(Graphics) curve: Graphics = null!;
     @property(Prefab) pillPrefab: Prefab = null!;
     @property(Node) recentBar: Node = null!; 
+    @property(EditBox) amountInput: EditBox = null!;
+    @property(Button) betButton: Button = null!;
+    @property(Button) cashOutButton: Button = null!;
+    @property(Label) messageLabel: Label = null!;
 
     private round: RoundView | null = null;
+    private myBet: Bet | null = null;   // my bet in the CURRENT round  当前回合的注单
+    private busy = false;               // a request is in progress  正在请求中
     private clockOffset = 0;     // serverTime − localTime
     private polling = false;
 
@@ -44,9 +61,19 @@ export class RocketGame extends Component {
 
     /** Runs once, when the scene starts.  场景开始时执行一次 */
     start() {
-        this.loadRecent(); 
-        this.poll();
-        this.schedule(this.poll, 0.5);   // Cocos timer: every 0.5 s  每 0.5 秒
+    // Button clicks → our methods  按钮点击 → 我们的方法
+    this.betButton.node.on(Button.EventType.CLICK, this.onBetClick, this);
+    this.cashOutButton.node.on(Button.EventType.CLICK, this.onCashOutClick, this);
+
+    // Listen to Vue; when we get a token, check whether we already bet this round
+    initBridge(() => {
+        this.messageLabel.string = '';
+        this.loadMyBet();
+    });
+
+    this.loadRecent();
+    this.poll();
+    this.schedule(this.poll, 0.5);
     }
 
     /** Runs EVERY FRAME (about 60×/s). dt = seconds since last frame.  每一帧执行 */
@@ -77,6 +104,7 @@ export class RocketGame extends Component {
             this.drawCurve(elapsed, scale);
         }
         // CRASHED: nothing to animate; playCrash() already set the labels
+        this.updateControls();
     }
 
     // ---------- talking to the server  和服务器沟通 ----------
@@ -101,18 +129,27 @@ export class RocketGame extends Component {
 
     /** React only to CHANGES: new round, or just crashed.  只对"变化"做反应 */
     private onRound(r: RoundView) {
-        const prev = this.round;
-        this.round = r;
+    const prev = this.round;
+    this.round = r;
 
-        const isNewRound = !prev || prev.id !== r.id;
-        if (isNewRound && r.status === 'BETTING') {
-            this.resetScene();
-        }
-        if (r.status === 'CRASHED' && prev?.status !== 'CRASHED') {
-            this.playCrash(r.crashPoint ?? r.multiplier);
-            this.loadRecent();
+    const isNewRound = !prev || prev.id !== r.id;
+    if (isNewRound && r.status === 'BETTING') {
+        this.resetScene();
+        this.myBet = null;                 // new round, no bet yet
+        this.messageLabel.string = '';
+    }
+
+    if (r.status === 'CRASHED' && prev?.status !== 'CRASHED') {
+        this.playCrash(r.crashPoint ?? r.multiplier);
+        this.loadRecent();
+        if (this.myBet?.status === 'PLACED') {
+            // Didn't cash out in time: get the REAL result from the server
+            this.messageLabel.string = `💥 Lost ${this.myBet.amount}`;
+            this.loadMyBet();
+            sendToParent({ type: 'BALANCE_CHANGED' });
         }
     }
+}
 
     // ---------- drawing  画面 ----------
 
@@ -190,4 +227,92 @@ private drawCurve(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier:
         // not important if it fails once; it reloads at the next crash
       }
     }
+
+    // ---------- actions  动作 ----------
+
+private async onBetClick() {
+    const amount = parseInt(this.amountInput.string, 10);
+    if (!Number.isFinite(amount)) {
+        this.messageLabel.string = 'Enter an amount';
+        return;
+    }
+    await this.act(async () => {
+        this.myBet = await request<Bet>('POST', '/bets', {
+            amount,
+            requestId: crypto.randomUUID(),   // new id per click → idempotent  每次点击新 ID
+        });
+        this.messageLabel.string = `Bet ${amount} placed. Good luck! 🍀`;
+    });
+}
+
+private async onCashOutClick() {
+    await this.act(async () => {
+        this.myBet = await request<Bet>('POST', '/bets/cashout');
+        this.messageLabel.string = `✅ Cashed out at ${fmtX(this.myBet.cashoutAt ?? 0)}: +${this.myBet.payout}`;
+    });
+}
+
+/** Run an action with: busy flag, one silent token refresh, friendly errors.
+ *  执行动作:防连点、自动刷新 token 一次、友善错误提示 */
+private async act(fn: () => Promise<void>) {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+        try {
+            await fn();
+        } catch (e) {
+            if (e instanceof ApiError && e.code === 'TOKEN_EXPIRED') {
+                await requestNewToken();   // ask Vue for a new one, then try once more
+                await fn();
+            } else {
+                throw e;
+            }
+        }
+        sendToParent({ type: 'BALANCE_CHANGED' });   // tell Vue to refresh the balance
+    } catch (e) {
+        if (e instanceof ApiError && e.status === 401) {
+            sendToParent({ type: 'AUTH_FAILED', code: e.code });   // e.g. KICKED → Vue goes to login
+        }
+        this.messageLabel.string = e instanceof Error ? e.message : 'Something went wrong';
+    } finally {
+        this.busy = false;
+    }
+}
+
+/** Ask the server whether I already have a bet this round (after a reload).
+ *  问服务器这局我是否已下注(重新加载后) */
+private async loadMyBet() {
+    if (!hasToken() || !this.round) return;
+    try {
+        const bets = await request<Bet[]>('GET', '/bets/me');
+        this.myBet = bets.find((b) => b.roundId === this.round!.id) ?? null;
+    } catch {
+        /* not critical */
+    }
+}
+
+/** Enable/disable buttons and update their text, every frame.  每一帧更新按钮状态 */
+private updateControls() {
+    const r = this.round;
+    const loggedIn = hasToken();
+
+    this.betButton.interactable =
+        loggedIn && !this.busy && r?.status === 'BETTING' && !this.myBet;
+
+    const canCashOut =
+        loggedIn && !this.busy && r?.status === 'RUNNING' && this.myBet?.status === 'PLACED';
+    this.cashOutButton.interactable = canCashOut;
+
+    const cashLabel = this.cashOutButton.node.getComponentInChildren(Label)!;
+    if (canCashOut && r?.launchedAtMs) {
+        const m = multiplierAt(this.serverNow() - r.launchedAtMs);
+        cashLabel.string = `Cash out  +${Math.floor((this.myBet!.amount * m) / 100)}`;
+    } else {
+        cashLabel.string = 'Cash out';
+    }
+
+    if (!loggedIn && !this.messageLabel.string) {
+        this.messageLabel.string = 'Watching. Log in from the lobby to play';
+    }
+}
 }

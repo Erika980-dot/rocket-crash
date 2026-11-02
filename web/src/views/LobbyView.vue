@@ -164,6 +164,9 @@ onUnmounted(() => window.clearInterval(timer))
         <RouterLink to="/history" class="rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600">
           History
         </RouterLink>
+        <RouterLink to="/play" class="rounded-lg bg-amber-400 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300">
+          Play 🚀
+        </RouterLink>
         <button @click="logout" class="rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600">
           Log out
         </button>

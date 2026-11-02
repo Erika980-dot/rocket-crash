@@ -72,3 +72,10 @@ export function errorMessage(e: unknown): string {
   }
   return 'Something went wrong'
 }
+
+/** Refresh the tokens now (used when the game says its token expired).
+ *  立即刷新 token(游戏说 token 过期时用) */
+export async function refreshNow() {
+  refreshing ??= refreshTokens().finally(() => { refreshing = null })
+  await refreshing
+}

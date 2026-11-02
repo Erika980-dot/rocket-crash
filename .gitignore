@@ -12,6 +12,7 @@ backend/target/
 # Node / Vue
 node_modules/
 web/dist/
+web/public/game/
 
 # Editors and OS
 .idea/
