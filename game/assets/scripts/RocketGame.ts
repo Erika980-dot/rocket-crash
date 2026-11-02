@@ -1,6 +1,6 @@
 import { _decorator, Component, Label, Node, Graphics, Vec3, Color, tween, UIOpacity, Prefab, instantiate, Sprite } from 'cc';
 import { getJson } from './Api';
-import { fmtX, multiplierAt } from './GameMath';
+import { fmtX, multiplierAt, GROWTH_PER_MS} from './GameMath';
 const { ccclass, property } = _decorator;
 
 /** Same shape as the backend's RoundView  对应后端的 RoundView */
@@ -67,15 +67,14 @@ export class RocketGame extends Component {
             this.multiplierLabel.string = fmtX(multiplierAt(elapsed));
             this.multiplierLabel.color = COLOR_RUNNING;
             this.statusLabel.string = 'Flying…';
-            this.rocket.setPosition(this.pointAt(elapsed));
-            // Direction of flight = from where we were 0.1 s ago to where we are now
-            const before = this.pointAt(Math.max(0, elapsed - 100));
-            const now = this.pointAt(elapsed);
-            const degrees = Math.atan2(now.y - before.y, now.x - before.x) * 180 / Math.PI;
 
-            // The 🚀 emoji is already drawn pointing up-right (45°), so subtract 45
-            this.rocket.angle = degrees - 45;
-            this.drawCurve(elapsed);
+            const scale = this.viewScale(elapsed);              // ONE zoom for this frame  这一帧用同一个缩放
+            const now = this.pointAt(elapsed, scale);
+            const before = this.pointAt(Math.max(0, elapsed - 100), scale);
+
+            this.rocket.setPosition(now);
+            this.rocket.angle = Math.atan2(now.y - before.y, now.x - before.x) * 180 / Math.PI - 45;
+            this.drawCurve(elapsed, scale);
         }
         // CRASHED: nothing to animate; playCrash() already set the labels
     }
@@ -118,28 +117,37 @@ export class RocketGame extends Component {
     // ---------- drawing  画面 ----------
 
     /** Screen position after elapsedMs: time → x, multiplier → y.  时间决定 x,倍数决定 y */
-    private pointAt(elapsedMs: number): Vec3 {
-        const seconds = elapsedMs / 1000;
-        const x = START.x + Math.min(seconds / SECONDS_ACROSS, 1) * WIDTH;
+    /** How big the axes are right now: always ~15% bigger than the current values.
+ *  坐标轴现在有多大:永远比当前数值大 15% 左右 */
+private viewScale(elapsedMs: number) {
+    const seconds = elapsedMs / 1000;
+    const m = Math.exp(GROWTH_PER_MS * elapsedMs);
+    return {
+        maxSeconds: Math.max(10, seconds * 1.15),   // at least 10 s wide
+        maxMultiplier: Math.max(2, m * 1.15),       // at least up to 2x
+    };
+}
 
-        const m = multiplierAt(elapsedMs) / 100;               // e.g. 2.5
-        const y = START.y + Math.min(Math.log10(m), 1) * HEIGHT; // 1x → 0, 10x → top
+/** Screen position for a moment of the flight, using the CURRENT zoom.  用当前缩放计算位置 */
+private pointAt(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier: number }): Vec3 {
+    const seconds = elapsedMs / 1000;
+    const m = Math.exp(GROWTH_PER_MS * elapsedMs);   // smooth, not rounded  不取整,曲线才平滑
+    const x = START.x + (seconds / scale.maxSeconds) * WIDTH;
+    const y = START.y + ((m - 1) / (scale.maxMultiplier - 1)) * HEIGHT;
+    return new Vec3(x, y, 0);
+}
 
-        return new Vec3(x, y, 0);
+private drawCurve(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier: number }) {
+    const g = this.curve;
+    g.clear();
+    g.moveTo(START.x, START.y);
+    const steps = 60;
+    for (let i = 1; i <= steps; i++) {
+        const p = this.pointAt((elapsedMs * i) / steps, scale);
+        g.lineTo(p.x, p.y);
     }
-
-    /** Draw the path from launch until now.  画出从起飞到现在的轨迹 */
-    private drawCurve(elapsedMs: number) {
-        const g = this.curve;
-        g.clear();
-        g.moveTo(START.x, START.y);
-        const steps = 40;
-        for (let i = 1; i <= steps; i++) {
-            const p = this.pointAt((elapsedMs * i) / steps);
-            g.lineTo(p.x, p.y);
-        }
-        g.stroke();
-    }
+    g.stroke();
+}
 
     private playCrash(crashPoint: number) {
         this.multiplierLabel.string = fmtX(crashPoint);
