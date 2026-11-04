@@ -6,8 +6,11 @@ import com.rocket.backend.game.RoundEngine;
 import com.rocket.backend.game.RoundStatus;
 import com.rocket.backend.ledger.LedgerEntry;
 import com.rocket.backend.ledger.LedgerRepository;
+import com.rocket.backend.user.User;
+import com.rocket.backend.user.UserRepository;
 import com.rocket.backend.wallet.WalletRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +25,8 @@ public class BetService {
     private final WalletRepository walletRepository;
     private final LedgerRepository ledgerRepository;
     private final RoundEngine roundEngine;
+    private final ApplicationEventPublisher events;   // org.springframework.context.ApplicationEventPublisher
+    private final UserRepository userRepository;      // com.rocket.backend.user.UserRepository
 
     // ================= PLACE BET 下注 =================
     @Transactional
@@ -99,6 +104,8 @@ public class BetService {
         ledgerRepository.save(LedgerEntry.of(
                 userId, payout, walletRepository.balanceOf(userId), "PAYOUT", bet.getId()));
 
+        String username = userRepository.findById(userId).map(User::getUsername).orElse("someone");
+        events.publishEvent(new CashedOutEvent(username, multiplier));
         return BetResponse.from(bet);
     }
 

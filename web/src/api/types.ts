@@ -5,6 +5,9 @@ export interface Round {
   status: RoundStatus
   seedHash: string
   multiplier: number
+  bettingEndsAtMs: number        // ← new
+  launchedAtMs: number | null    // ← new
+  serverTimeMs: number           // ← new
   crashPoint: number | null
   serverSeed: string | null
 }

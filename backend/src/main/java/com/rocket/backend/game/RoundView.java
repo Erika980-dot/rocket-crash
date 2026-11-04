@@ -11,7 +11,7 @@ public record RoundView(
         Integer crashPoint,       // null until CRASHED
         String serverSeed         // null until CRASHED
 ) {
-    static RoundView from(CurrentRound c) {
+    public static RoundView from(CurrentRound c) {
         boolean over = c.status() == RoundStatus.CRASHED;
         return new RoundView(
                 c.id(), c.status(), c.seedHash(), c.multiplierNow(),

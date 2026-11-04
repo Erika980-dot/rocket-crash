@@ -11,8 +11,9 @@ export default defineConfig({
     },
   },
   server: {
-    proxy: {
-      '/api': 'http://localhost:8080',   // forward API calls to Spring Boot  转发到后端
-    },
+  proxy: {
+    '/api': 'http://localhost:8080',
+    '/ws': { target: 'http://localhost:8080', ws: true },   // ← new: forward WebSocket connections
   },
+},
 })

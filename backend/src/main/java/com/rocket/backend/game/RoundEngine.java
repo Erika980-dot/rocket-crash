@@ -4,6 +4,7 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
@@ -22,6 +23,7 @@ public class RoundEngine {
     private final AtomicReference<CurrentRound> current = new AtomicReference<>();
     private volatile boolean running = true;
     private Thread thread;
+    private final ApplicationEventPublisher events;   // import org.springframework.context.ApplicationEventPublisher
 
     /** Runs once, when Spring has finished starting.  Spring 启动完成后执行一次 */
     @EventListener(ApplicationReadyEvent.class)
@@ -63,6 +65,7 @@ public class RoundEngine {
         // 1. BETTING
         Round r = roundService.openNewRound();
         current.set(CurrentRound.betting(r, Instant.now().plusMillis(BETTING_MS)));
+        events.publishEvent(new RoundChangedEvent("BETTING", current.get()));
         log.info("Round {} BETTING  hash={}", r.getId(), r.getSeedHash());   // the HASH, never the seed!
         Thread.sleep(BETTING_MS);
 
@@ -70,6 +73,7 @@ public class RoundEngine {
         Instant launchedAt = Instant.now();
         roundService.launch(r.getId(), launchedAt);
         current.set(current.get().running(launchedAt));
+        events.publishEvent(new RoundChangedEvent("LAUNCH", current.get()));
         log.info("Round {} RUNNING", r.getId());
 
         long flightMs = CrashMath.timeToReach(r.getCrashPoint());   // e.g. 2.50x → about 15,272 ms
@@ -78,6 +82,7 @@ public class RoundEngine {
         // 3. CRASHED
         int losers = roundService.crash(r.getId());
         current.set(current.get().crashed());
+        events.publishEvent(new RoundChangedEvent("CRASH", current.get()));
         log.info("Round {} CRASHED at {}x ({} bet(s) lost)", r.getId(), r.getCrashPoint() / 100.0, losers);
     }
 }

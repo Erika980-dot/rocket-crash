@@ -5,6 +5,7 @@ import { errorMessage, http } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { fmtX, type Bet, type Me, type Round, type Wallet } from '@/api/types'
 import BetPanel from '@/components/BetPanel.vue'
+import { Net, type ServerMsg } from '@/api/net'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -27,6 +28,46 @@ const phase = computed(() => {
   }
 })
 
+const connected = ref(false)
+let net: Net | null = null
+let clockOffset = 0            // serverTime − localTime
+
+// "now" updates every animation frame (~60×/s), so the number climbs smoothly
+// "now" 每一帧更新(约每秒 60 次),数字才会平滑上涨
+const now = ref(Date.now())
+let raf = 0
+function tick() {
+  now.value = Date.now()
+  raf = requestAnimationFrame(tick)
+}
+
+// The multiplier, computed locally while flying  飞行时在本地计算倍数
+const liveMultiplier = computed(() => {
+  const r = round.value
+  if (!r) return 100
+  if (r.status === 'RUNNING' && r.launchedAtMs !== null) {
+    const elapsed = now.value + clockOffset - r.launchedAtMs
+    return Math.floor(100 * Math.exp(0.00006 * Math.max(0, elapsed)))   // SAME formula as the server
+  }
+  return r.multiplier
+})
+
+// The round with the live multiplier: used by the template and BetPanel
+const liveRound = computed(() =>
+  round.value ? { ...round.value, multiplier: liveMultiplier.value } : null,
+)
+
+function onServerMessage(msg: ServerMsg) {
+  if (msg.type === 'PONG') {
+    clockOffset = msg.serverTimeMs - Date.now()
+    return
+  }
+  if (msg.round) {
+    clockOffset = msg.round.serverTimeMs - Date.now()
+    round.value = msg.round as Round
+  }
+}
+
 // ---------- loading data from the server  从服务器读取 ----------
 async function loadWallet() {
   balance.value = (await http.get<Wallet>('/wallet/me')).data.balance
@@ -37,13 +78,6 @@ async function loadRecent() {
   recent.value = data.map((r) => r.crashPoint)
 }
 
-async function pollRound() {
-  try {
-    round.value = (await http.get<Round>('/rounds/current')).data
-  } catch {
-    /* one failed poll is fine */
-  }
-}
 
 /** Ask the server: do I have a bet in this round, and what's its status?  问服务器我这局的注单 */
 async function loadMyBet(roundId: number) {
@@ -134,18 +168,31 @@ watch(
   },
 )
 
+watch(
+  () => round.value?.id,
+  (id, oldId) => {
+    if (oldId !== undefined && id !== oldId) {
+      myBet.value = null
+      error.value = ''
+    }
+    if (oldId === undefined && id !== undefined) loadMyBet(id)   // first snapshot  第一次收到快照
+  },
+)
+
 // ---------- lifecycle  生命周期 ----------
 onMounted(async () => {
   me.value = (await http.get<Me>('/users/me')).data
   await loadWallet()
   await loadRecent()
-  await pollRound()
-  // After a page refresh mid-round: did I already bet?  刷新页面后:这局我已经下注了吗?
-  if (round.value) await loadMyBet(round.value.id)
-  timer = window.setInterval(pollRound, 500)
+  net = new Net(onServerMessage, (c) => { connected.value = c })
+  net.connect()
+  tick()
 })
 
-onUnmounted(() => window.clearInterval(timer))
+onUnmounted(() => {
+  net?.close()                    // ALWAYS close the socket when leaving the page  离开页面一定要关闭
+  cancelAnimationFrame(raf)
+})
 
 </script>
 
@@ -185,16 +232,16 @@ onUnmounted(() => window.clearInterval(timer))
     </div>
 
     <section class="rounded-2xl bg-slate-800 p-8 text-center">
-      <p class="text-sm text-slate-400">Round #{{ round?.id ?? '–' }}</p>
+      <p class="text-sm text-slate-400">Round #{{ liveRound?.id ?? '–' }}</p>
       <p class="my-4 text-6xl font-black tabular-nums md:text-8xl" :class="phase.color">
-        {{ round ? fmtX(round.multiplier) : '–' }}
+        {{ liveRound ? fmtX(liveRound.multiplier) : '–' }}
       </p>
       <p class="text-lg" :class="phase.color">{{ phase.label }}</p>
     </section>
 
     <!-- props DOWN, events UP  数据往下传,事件往上报 -->
-    <BetPanel :round="round" :my-bet="myBet" :busy="busy" @bet="placeBet" @cashout="cashOut" />
+    <BetPanel :round="liveRound" :my-bet="myBet" :busy="busy" @bet="placeBet" @cashout="cashOut" />
 
-    <p v-if="error" class="mt-3 text-center text-sm text-red-400">{{ error }}</p>
+    <p v-if="!connected" class="mt-3 text-center text-sm text-amber-300">Reconnecting…</p>
   </div>
 </template>

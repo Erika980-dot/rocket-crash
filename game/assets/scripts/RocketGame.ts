@@ -1,8 +1,11 @@
-import { _decorator, Component, Label, Node, Graphics, Vec3, Color, tween, UIOpacity,
-         Prefab, instantiate, Sprite, Button, EditBox } from 'cc';
+import {
+    _decorator, Component, Label, Node, Graphics, Vec3, Color, tween, UIOpacity,
+    Prefab, instantiate, Sprite, Button, EditBox
+} from 'cc';
 import { ApiError, getJson, hasToken, request } from './Api';
 import { initBridge, requestNewToken, sendToParent } from './Bridge';
 import { fmtX, multiplierAt, GROWTH_PER_MS } from './GameMath';
+import { Net, ServerMsg } from './Net';
 const { ccclass, property } = _decorator;
 
 /** Same shape as the backend's RoundView  对应后端的 RoundView */
@@ -45,35 +48,65 @@ export class RocketGame extends Component {
     @property(Node) rocket: Node = null!;
     @property(Graphics) curve: Graphics = null!;
     @property(Prefab) pillPrefab: Prefab = null!;
-    @property(Node) recentBar: Node = null!; 
+    @property(Node) recentBar: Node = null!;
     @property(EditBox) amountInput: EditBox = null!;
     @property(Button) betButton: Button = null!;
     @property(Button) cashOutButton: Button = null!;
     @property(Label) messageLabel: Label = null!;
+    @property(Label) feedLabel: Label = null!;
 
     private round: RoundView | null = null;
+    private net: Net | null = null;
+    private connected = false;
     private myBet: Bet | null = null;   // my bet in the CURRENT round  当前回合的注单
     private busy = false;               // a request is in progress  正在请求中
     private clockOffset = 0;     // serverTime − localTime
-    private polling = false;
+    private feed: string[] = [];
 
     // ---------- lifecycle  生命周期 ----------
 
     /** Runs once, when the scene starts.  场景开始时执行一次 */
     start() {
-    // Button clicks → our methods  按钮点击 → 我们的方法
-    this.betButton.node.on(Button.EventType.CLICK, this.onBetClick, this);
-    this.cashOutButton.node.on(Button.EventType.CLICK, this.onCashOutClick, this);
+        // Button clicks → our methods  按钮点击 → 我们的方法
+        this.betButton.node.on(Button.EventType.CLICK, this.onBetClick, this);
+        this.cashOutButton.node.on(Button.EventType.CLICK, this.onCashOutClick, this);
 
-    // Listen to Vue; when we get a token, check whether we already bet this round
-    initBridge(() => {
-        this.messageLabel.string = '';
-        this.loadMyBet();
-    });
+        // Listen to Vue; when we get a token, check whether we already bet this round
+        initBridge(() => {
+            this.messageLabel.string = '';
+            this.loadMyBet();
+        });
 
-    this.loadRecent();
-    this.poll();
-    this.schedule(this.poll, 0.5);
+        this.loadRecent();
+        this.net = new Net(
+            (msg) => this.onServerMessage(msg),
+            (connected) => { this.connected = connected; },
+        );
+        this.net.connect();
+    }
+
+    /** Called by Cocos when the scene/node is destroyed  场景销毁时 */
+    onDestroy() {
+        this.net?.close();
+    }
+
+    /** Every message from the server arrives here  所有服务器消息都从这里进来 */
+    private onServerMessage(msg: ServerMsg) {
+        if (msg.type === 'PONG') {
+            this.clockOffset = msg.serverTimeMs - Date.now();   // re-sync the clock every 10 s
+            return;
+        }
+        if (msg.type === 'CASHED_OUT') {
+            this.feed.unshift(`${msg.username} cashed out at ${fmtX(msg.multiplier)}`);   // newest on top
+            this.feed = this.feed.slice(0, 5);                                            // keep only 5 lines
+            this.feedLabel.string = this.feed.join('\n');
+            return;
+        }
+        if (msg.round) {   // SNAPSHOT, BETTING, LAUNCH, CRASH all carry a round
+            const r = msg.round as RoundView;
+            this.clockOffset = r.serverTimeMs - Date.now();
+            this.onRound(r);
+        }
     }
 
     /** Runs EVERY FRAME (about 60×/s). dt = seconds since last frame.  每一帧执行 */
@@ -103,6 +136,10 @@ export class RocketGame extends Component {
             this.rocket.angle = Math.atan2(now.y - before.y, now.x - before.x) * 180 / Math.PI - 45;
             this.drawCurve(elapsed, scale);
         }
+
+        if (!this.connected) {
+            this.statusLabel.string = 'Reconnecting…';
+        }
         // CRASHED: nothing to animate; playCrash() already set the labels
         this.updateControls();
     }
@@ -113,78 +150,73 @@ export class RocketGame extends Component {
         return Date.now() + this.clockOffset;
     }
 
-    private async poll() {
-        if (this.polling) return;          // don't start a 2nd poll while one is running
-        this.polling = true;
-        try {
-            const r = await getJson<RoundView>('/rounds/current');
-            this.clockOffset = r.serverTimeMs - Date.now();
-            this.onRound(r);
-        } catch (e) {
-            this.statusLabel.string = 'Connecting…';
-        } finally {
-            this.polling = false;
-        }
-    }
-
     /** React only to CHANGES: new round, or just crashed.  只对"变化"做反应 */
     private onRound(r: RoundView) {
-    const prev = this.round;
-    this.round = r;
+        const prev = this.round;
+        this.round = r;
 
-    const isNewRound = !prev || prev.id !== r.id;
-    if (isNewRound && r.status === 'BETTING') {
-        this.resetScene();
-        this.myBet = null;                 // new round, no bet yet
-        this.messageLabel.string = '';
-    }
+        const isNewRound = !prev || prev.id !== r.id;
+        if (isNewRound) {
+            // ANY new round (also one we join halfway after a reconnect) → clean slate
+            // 任何新回合(包括重连后中途加入的)→ 重置画面
+            this.resetScene();
+            this.myBet = null;
+            this.messageLabel.string = '';
+            this.feed = [];
+            this.feedLabel.string = '';
+            if (r.status !== 'BETTING') {
+                this.loadMyBet();                         // joined mid-round: did I bet?  中途加入:我有下注吗?
+                sendToParent({ type: 'BALANCE_CHANGED' }); // we may have missed a settlement  可能错过了结算
+            }
+        }
 
-    if (r.status === 'CRASHED' && prev?.status !== 'CRASHED') {
-        this.playCrash(r.crashPoint ?? r.multiplier);
-        this.loadRecent();
-        if (this.myBet?.status === 'PLACED') {
-            // Didn't cash out in time: get the REAL result from the server
-            this.messageLabel.string = `💥 Lost ${this.myBet.amount}`;
-            this.loadMyBet();
-            sendToParent({ type: 'BALANCE_CHANGED' });
+        if (r.status === 'CRASHED' && prev?.status !== 'CRASHED') {
+            this.playCrash(r.crashPoint ?? r.multiplier);   // red number + explosion  红色数字 + 爆炸
+            this.loadRecent();                               // new pill  更新最近爆炸点
+
+            if (this.myBet?.status === 'PLACED') {
+                // Didn't cash out in time: get the REAL result from the server
+                this.messageLabel.string = `💥 Lost ${this.myBet.amount}`;
+                this.loadMyBet();
+                sendToParent({ type: 'BALANCE_CHANGED' });
+            }
         }
     }
-}
 
     // ---------- drawing  画面 ----------
 
     /** Screen position after elapsedMs: time → x, multiplier → y.  时间决定 x,倍数决定 y */
     /** How big the axes are right now: always ~15% bigger than the current values.
  *  坐标轴现在有多大:永远比当前数值大 15% 左右 */
-private viewScale(elapsedMs: number) {
-    const seconds = elapsedMs / 1000;
-    const m = Math.exp(GROWTH_PER_MS * elapsedMs);
-    return {
-        maxSeconds: Math.max(10, seconds * 1.15),   // at least 10 s wide
-        maxMultiplier: Math.max(2, m * 1.15),       // at least up to 2x
-    };
-}
-
-/** Screen position for a moment of the flight, using the CURRENT zoom.  用当前缩放计算位置 */
-private pointAt(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier: number }): Vec3 {
-    const seconds = elapsedMs / 1000;
-    const m = Math.exp(GROWTH_PER_MS * elapsedMs);   // smooth, not rounded  不取整,曲线才平滑
-    const x = START.x + (seconds / scale.maxSeconds) * WIDTH;
-    const y = START.y + ((m - 1) / (scale.maxMultiplier - 1)) * HEIGHT;
-    return new Vec3(x, y, 0);
-}
-
-private drawCurve(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier: number }) {
-    const g = this.curve;
-    g.clear();
-    g.moveTo(START.x, START.y);
-    const steps = 60;
-    for (let i = 1; i <= steps; i++) {
-        const p = this.pointAt((elapsedMs * i) / steps, scale);
-        g.lineTo(p.x, p.y);
+    private viewScale(elapsedMs: number) {
+        const seconds = elapsedMs / 1000;
+        const m = Math.exp(GROWTH_PER_MS * elapsedMs);
+        return {
+            maxSeconds: Math.max(10, seconds * 1.15),   // at least 10 s wide
+            maxMultiplier: Math.max(2, m * 1.15),       // at least up to 2x
+        };
     }
-    g.stroke();
-}
+
+    /** Screen position for a moment of the flight, using the CURRENT zoom.  用当前缩放计算位置 */
+    private pointAt(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier: number }): Vec3 {
+        const seconds = elapsedMs / 1000;
+        const m = Math.exp(GROWTH_PER_MS * elapsedMs);   // smooth, not rounded  不取整,曲线才平滑
+        const x = START.x + (seconds / scale.maxSeconds) * WIDTH;
+        const y = START.y + ((m - 1) / (scale.maxMultiplier - 1)) * HEIGHT;
+        return new Vec3(x, y, 0);
+    }
+
+    private drawCurve(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier: number }) {
+        const g = this.curve;
+        g.clear();
+        g.moveTo(START.x, START.y);
+        const steps = 60;
+        for (let i = 1; i <= steps; i++) {
+            const p = this.pointAt((elapsedMs * i) / steps, scale);
+            g.lineTo(p.x, p.y);
+        }
+        g.stroke();
+    }
 
     private playCrash(crashPoint: number) {
         this.multiplierLabel.string = fmtX(crashPoint);
@@ -207,112 +239,112 @@ private drawCurve(elapsedMs: number, scale: { maxSeconds: number; maxMultiplier:
     }
 
     private async loadRecent() {
-       try {
-        const list = await getJson<{ crashPoint: number }[]>('/rounds/recent');
+        try {
+            const list = await getJson<{ crashPoint: number }[]>('/rounds/recent');
 
-        // Remove the old pills, and destroy them to free memory
-        // 移除旧标签,并销毁以释放内存
-        const old = [...this.recentBar.children];
-        this.recentBar.removeAllChildren();
-        old.forEach((n) => n.destroy());
+            // Remove the old pills, and destroy them to free memory
+            // 移除旧标签,并销毁以释放内存
+            const old = [...this.recentBar.children];
+            this.recentBar.removeAllChildren();
+            old.forEach((n) => n.destroy());
 
-        for (const r of list) {
-            const pill = instantiate(this.pillPrefab);          // copy the template  复制模板
-            const good = r.crashPoint >= 200;                    // 2.00x or more
-            pill.getComponent(Sprite)!.color = good ? new Color(16, 185, 129) : new Color(220, 38, 38);
-            pill.getComponentInChildren(Label)!.string = fmtX(r.crashPoint);
-            this.recentBar.addChild(pill);                       // Layout places it  Layout 自动排列
+            for (const r of list) {
+                const pill = instantiate(this.pillPrefab);          // copy the template  复制模板
+                const good = r.crashPoint >= 200;                    // 2.00x or more
+                pill.getComponent(Sprite)!.color = good ? new Color(16, 185, 129) : new Color(220, 38, 38);
+                pill.getComponentInChildren(Label)!.string = fmtX(r.crashPoint);
+                this.recentBar.addChild(pill);                       // Layout places it  Layout 自动排列
+            }
+        } catch {
+            // not important if it fails once; it reloads at the next crash
         }
-       } catch {
-        // not important if it fails once; it reloads at the next crash
-      }
     }
 
     // ---------- actions  动作 ----------
 
-private async onBetClick() {
-    const amount = parseInt(this.amountInput.string, 10);
-    if (!Number.isFinite(amount)) {
-        this.messageLabel.string = 'Enter an amount';
-        return;
-    }
-    await this.act(async () => {
-        this.myBet = await request<Bet>('POST', '/bets', {
-            amount,
-            requestId: crypto.randomUUID(),   // new id per click → idempotent  每次点击新 ID
+    private async onBetClick() {
+        const amount = parseInt(this.amountInput.string, 10);
+        if (!Number.isFinite(amount)) {
+            this.messageLabel.string = 'Enter an amount';
+            return;
+        }
+        await this.act(async () => {
+            this.myBet = await request<Bet>('POST', '/bets', {
+                amount,
+                requestId: crypto.randomUUID(),   // new id per click → idempotent  每次点击新 ID
+            });
+            this.messageLabel.string = `Bet ${amount} placed. Good luck! 🍀`;
         });
-        this.messageLabel.string = `Bet ${amount} placed. Good luck! 🍀`;
-    });
-}
+    }
 
-private async onCashOutClick() {
-    await this.act(async () => {
-        this.myBet = await request<Bet>('POST', '/bets/cashout');
-        this.messageLabel.string = `✅ Cashed out at ${fmtX(this.myBet.cashoutAt ?? 0)}: +${this.myBet.payout}`;
-    });
-}
+    private async onCashOutClick() {
+        await this.act(async () => {
+            this.myBet = await request<Bet>('POST', '/bets/cashout');
+            this.messageLabel.string = `✅ Cashed out at ${fmtX(this.myBet.cashoutAt ?? 0)}: +${this.myBet.payout}`;
+        });
+    }
 
-/** Run an action with: busy flag, one silent token refresh, friendly errors.
- *  执行动作:防连点、自动刷新 token 一次、友善错误提示 */
-private async act(fn: () => Promise<void>) {
-    if (this.busy) return;
-    this.busy = true;
-    try {
+    /** Run an action with: busy flag, one silent token refresh, friendly errors.
+     *  执行动作:防连点、自动刷新 token 一次、友善错误提示 */
+    private async act(fn: () => Promise<void>) {
+        if (this.busy) return;
+        this.busy = true;
         try {
-            await fn();
-        } catch (e) {
-            if (e instanceof ApiError && e.code === 'TOKEN_EXPIRED') {
-                await requestNewToken();   // ask Vue for a new one, then try once more
+            try {
                 await fn();
-            } else {
-                throw e;
+            } catch (e) {
+                if (e instanceof ApiError && e.code === 'TOKEN_EXPIRED') {
+                    await requestNewToken();   // ask Vue for a new one, then try once more
+                    await fn();
+                } else {
+                    throw e;
+                }
             }
+            sendToParent({ type: 'BALANCE_CHANGED' });   // tell Vue to refresh the balance
+        } catch (e) {
+            if (e instanceof ApiError && e.status === 401) {
+                sendToParent({ type: 'AUTH_FAILED', code: e.code });   // e.g. KICKED → Vue goes to login
+            }
+            this.messageLabel.string = e instanceof Error ? e.message : 'Something went wrong';
+        } finally {
+            this.busy = false;
         }
-        sendToParent({ type: 'BALANCE_CHANGED' });   // tell Vue to refresh the balance
-    } catch (e) {
-        if (e instanceof ApiError && e.status === 401) {
-            sendToParent({ type: 'AUTH_FAILED', code: e.code });   // e.g. KICKED → Vue goes to login
+    }
+
+    /** Ask the server whether I already have a bet this round (after a reload).
+     *  问服务器这局我是否已下注(重新加载后) */
+    private async loadMyBet() {
+        if (!hasToken() || !this.round) return;
+        try {
+            const bets = await request<Bet[]>('GET', '/bets/me');
+            this.myBet = bets.find((b) => b.roundId === this.round!.id) ?? null;
+        } catch {
+            /* not critical */
         }
-        this.messageLabel.string = e instanceof Error ? e.message : 'Something went wrong';
-    } finally {
-        this.busy = false;
-    }
-}
-
-/** Ask the server whether I already have a bet this round (after a reload).
- *  问服务器这局我是否已下注(重新加载后) */
-private async loadMyBet() {
-    if (!hasToken() || !this.round) return;
-    try {
-        const bets = await request<Bet[]>('GET', '/bets/me');
-        this.myBet = bets.find((b) => b.roundId === this.round!.id) ?? null;
-    } catch {
-        /* not critical */
-    }
-}
-
-/** Enable/disable buttons and update their text, every frame.  每一帧更新按钮状态 */
-private updateControls() {
-    const r = this.round;
-    const loggedIn = hasToken();
-
-    this.betButton.interactable =
-        loggedIn && !this.busy && r?.status === 'BETTING' && !this.myBet;
-
-    const canCashOut =
-        loggedIn && !this.busy && r?.status === 'RUNNING' && this.myBet?.status === 'PLACED';
-    this.cashOutButton.interactable = canCashOut;
-
-    const cashLabel = this.cashOutButton.node.getComponentInChildren(Label)!;
-    if (canCashOut && r?.launchedAtMs) {
-        const m = multiplierAt(this.serverNow() - r.launchedAtMs);
-        cashLabel.string = `Cash out  +${Math.floor((this.myBet!.amount * m) / 100)}`;
-    } else {
-        cashLabel.string = 'Cash out';
     }
 
-    if (!loggedIn && !this.messageLabel.string) {
-        this.messageLabel.string = 'Watching. Log in from the lobby to play';
+    /** Enable/disable buttons and update their text, every frame.  每一帧更新按钮状态 */
+    private updateControls() {
+        const r = this.round;
+        const loggedIn = hasToken();
+
+        this.betButton.interactable =
+            loggedIn && !this.busy && r?.status === 'BETTING' && !this.myBet;
+
+        const canCashOut =
+            loggedIn && !this.busy && r?.status === 'RUNNING' && this.myBet?.status === 'PLACED';
+        this.cashOutButton.interactable = canCashOut;
+
+        const cashLabel = this.cashOutButton.node.getComponentInChildren(Label)!;
+        if (canCashOut && r?.launchedAtMs) {
+            const m = multiplierAt(this.serverNow() - r.launchedAtMs);
+            cashLabel.string = `Cash out  +${Math.floor((this.myBet!.amount * m) / 100)}`;
+        } else {
+            cashLabel.string = 'Cash out';
+        }
+
+        if (!loggedIn && !this.messageLabel.string) {
+            this.messageLabel.string = 'Watching. Log in from the lobby to play';
+        }
     }
-}
 }
